@@ -1,0 +1,138 @@
+#########################################################
+#DEG ANALYSIS USING DESEQ2 IN R
+#########################################################
+
+#LOAD IN LIBRARY AND DATA
+#SET THE FILE DELIMITER AND SET THE FIRST COLUMN AS ROW NAMES
+#ADD YOUR COLUMN NAMES IF YOU HAVEN'T GOT A HEADER
+
+library(DESeq2)
+raw_counts <- read.table("/path/to/file",h=F,sep=" ",row.names=1)
+colnames(raw_counts) <- c("colname1..","colname2..","colnamen..")
+
+#########################################################
+#SET UP THE CONDITION VARIABLE WHICH HOLDS THE CONDITIONS / TREATMENTS OF YOUR SAMPLES
+#CREATE A DATA FRAME OF THE SAMPLES AND CONDITIONS
+#RUN DESEQ2 
+
+(condition <- factor(c(rep("Condition1",X),rep("Condition2",X))))
+(coldata <- data.frame(row.names=colnames(raw_counts), condition))
+dds <- DESeqDataSetFromMatrix(countData=raw_counts, colData=coldata, design=~condition)
+dds <- DESeq(dds)
+res <- results(dds)
+
+#########################################################
+
+#CREATE VOLCANO PLOT
+#INCLUDES A THRESHOLD FOR P-VALUES THAT TEND TOWARDS ZERO WHICH WOULD
+#OTHERWISE BE PLOTTED OUTSIDE THE AXIS LIMITS
+
+#HIGHLIGHTS GENES SIGNIFICANTLY DYSREGULATED AND A LOG2 FOLD CHANGE GREATER THAN 4
+
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(ggrepel)
+
+volcano <- data.frame(subset(res, select=c(log2FoldChange,pvalue,padj)))
+volcano <- rownames_to_column(volcano)
+
+results = mutate(volcano, sig=ifelse(rv_volcano$padj<0.05 & abs(rv_volcano$log2FoldChange)>1, "Sig","Not Sig"))
+indx <- results$pvalue < abs(1e-80) 
+results$pvalue[indx & !is.na(indx)] <- 1e-80
+
+ggplot(results, aes(log2FoldChange, -log10(pvalue))) + geom_point(aes(col=sig)) + scale_color_manual(values=c("black", "red")) +geom_text_repel(data=filter(results, padj<0.05 & abs(log2FoldChange)>4), aes(label=rowname)) + xlim(-7,7) + ylim(0,100) + ggtitle(YOUR TITLE") + theme(plot.title = element_text(hjust = 0.5,size=12))
+
+#########################################################
+
+#PERFORM KEGG PATHWAY ENRICHMENT ANALYSIS
+
+library(gage)
+library(pathview)
+
+deseq2.res <- results(dds)
+deseq2.fc=deseq2.res$log2FoldChange
+names(deseq2.fc)=rownames(deseq2.res)
+exp.fc=deseq2.fc
+out.suffix="deseq2"
+
+#KG.MTU SHOULD BE CHANGED TO REFLECT YOUR KEGG ID
+#MTB --> MTB H37RV
+
+#CORRECTS FOR MULTIPLE TESTING AND SAVES KEGG PATHWAY IMAGES INCLUDING GENE EXPRESSION
+kg.mtu=kegg.gsets("YOUR KEGG ID")
+kegg.gs=kg.mtu$kg.sets[kg.mtu$sigmet.idx]
+fc.kegg.p <- gage(exp.fc, gsets=kegg.gs, ref=NULL, samp=NULL)
+sel <- fc.kegg.p$greater[, "q.val"] < 0.2 & !is.na(fc.kegg.p$greater[, "q.val"])
+path.ids <- rownames(fc.kegg.p$greater)[sel]
+sel.l <- fc.kegg.p$less[, "q.val"] < 0.2 & !is.na(fc.kegg.p$less[, "q.val"])
+path.ids.l <- rownames(fc.kegg.p$less)[sel.l]
+path.ids2 <- substr(c(path.ids, path.ids.l),1 ,8)
+require(pathview)
+pv.out.list <- sapply(path.ids2, function(pid) pathview(gene.data= exp.fc, pathway.id=pid, species="mtu", gene.idtype="KEGG", cpd.idtype="KEGG", same.layer = F, kegg.native = T, node.sum="median"))
+pv.out.list <- sapply(path.ids2, function(pid) pathview(gene.data = exp.fc, pathway.id = pid,species = "mtu", gene.idtype="KEGG", cpd.idtype="KEGG"))
+
+#########################################################
+
+#PERFORM KEGG PATHWAY ENRICHMENT ANALYSIS
+#UP OR DOWNREGULATED GENE LISTS SHOULD BE FILTERED TO REMOVE GENES THAT HAVE NOT BEEN ASSIGNED GO TERMS
+#FILES SHOULD CONTAIN TWO COLUMNS, FIRST IS GENE NAME, SECOND IS LINE NUMBER
+
+#NEED A UNIVERSE OF ALL GENES AND THEIR ASSIGNED GO TERMS IN THE FORMAT:
+# GENENAME \t GO:ID1, GO:ID2, GO:IDN
+#ALSO NEED A LIST OF ALL GENES IN THE SAME FORMAT AS UP AND DOWN REGULATED GENES I.E. FILE  SHOULD CONTAIN TWO COLUMNS, FIRST IS GENE #NAME, SECOND IS LINE NUMBER
+
+#1. READ IN GENE LISTS AND TOPGO LIBRARY
+
+library(topGO)
+
+sig_gene_list <- read.table("/path/to/genelist", header=FALSE, row.names=1)
+sig_gene_list <- as.matrix(sig_gene_list)
+sig_gene_list <- c(sig_gene_list[,])
+
+all_gene_list <- read.table("path/to/all_geneslist", header=FALSE, row.names=1)
+all_gene_list <- as.matrix(all_gene_list)
+all_gene_list <- c(all_gene_list[,])
+
+#2. READ IN UNIVERSE USING TOPGO FUNCTION 
+
+godb <- readMappings("/path/to/GO_DB")
+
+#3. CREATE LIST OF YOUR GENES OF INTEREST AND ALL GENES
+
+geneNames <- names(all_gene_list)
+myInterestingGenes <- names(sig_gene_list)
+geneList <- factor(as.integer(geneNames %in% myInterestingGenes))
+names(geneList) <- geneNames
+str(geneList)
+
+#4. RUN MF, BP AND CC GO TERM ENRICHMENT ANALYSIS
+#CORRECTS FOR MULTIPLE TESTING AND PRINTS OUT NUMBER OF SIGNIFICANT GO TERMS AND SAVES THEM TO A FILE
+
+GOdata.MF <- new("topGOdata", ontology = "MF", allGenes = geneList, annot = annFUN.gene2GO, gene2GO = rv_godb)
+results <- runTest(GOdata.MF  , algorithm = 'classic', statistic = 'fisher')
+results.table <- GenTable(GOdata.MF, results, topNodes = length(results@score))
+dim(results.table)[1]
+results.table.bh <- results.table[which(p.adjust(results.table[,"result1"],method="BH")<=0.05),]
+dim(results.table.bh)[1]
+
+write.table(results.table.bh, "/path/to/MF.txt", sep="\t", quote=FALSE
+
+GOdata.BP <- new("topGOdata", ontology = "BP", allGenes = geneList, annot = annFUN.gene2GO, gene2GO = rv_godb)
+results <- runTest(GOdata.BP , algorithm = 'classic', statistic = 'fisher')
+results.table <- GenTable(GOdata.BP, results, topNodes = length(results@score))
+dim(results.table)[1]
+results.table.bh <- results.table[which(p.adjust(results.table[,"result1"],method="BH")<=0.05),]
+dim(results.table.bh)[1]
+
+write.table(results.table.bh, "/path/to/BP.txt", sep="\t", quote=FALSE
+
+GOdata.CC <- new("topGOdata", ontology = "CC", allGenes = geneList, annot = annFUN.gene2GO, gene2GO = rv_godb)
+results <- runTest(GOdata.CC , algorithm = 'classic', statistic = 'fisher')
+results.table <- GenTable(GOdata.CC, results, topNodes = length(results@score))
+dim(results.table)[1]
+results.table.bh <- results.table[which(p.adjust(results.table[,"result1"],method="BH")<=0.05),]
+dim(results.table.bh)[1]
+
+write.table(results.table.bh, "/path/to/CC.txt", sep="\t", quote=FALSE
+
